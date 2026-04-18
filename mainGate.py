@@ -7,26 +7,59 @@ import sys
 import os
 
 class gateway:
-    
+
     def __init__(self):
-        self.db = 'newgrounds.db'
-        self.con = sqlite3.connect(self.db)
-        self.cur = self.con.cursor()
+        self.dbArray = {}
+        self.defaultDB = "Newgrounds.db"
         
-        self.getScores = False
-        self.getSaveFiles = False
+        self.initDatabase(self.defaultDB)
         
-        print("init Newgrounds class")
+        self.getScores = False # Export user scores
+        self.getSaveFiles = False # Export user submitted data
+        self.seperateData = False # Keeps saves and score entries in a seperate database
+        self.exportJson = False
+        
+        print("Starting Newgrounds Gateway class...")
+    
+    
+    # Handles initiating multible databases
+    def initDatabase(self, databaseName, subDB = False):
+        tables = ["movies", "medals", "scoreboards", "save_groups", "scores", "saves"]
+        
+        if databaseName in self.dbArray:
+            print("- Database already initiated: " + databaseName)
+            return
+
+        self.dbArray[databaseName] = {}
+        self.dbArray[databaseName]["con"] = sqlite3.connect(databaseName)
+        self.dbArray[databaseName]["cur"] = self.dbArray[databaseName]["con"].cursor()
+        
+        if subDB:
+            tables = ["scores", "saves"]
+        
+        for table in tables:
+            with open(os.getcwd() + f"\\sql\\{table}.sql") as tableQuery:
+                self.dbArray[databaseName]["cur"].execute(tableQuery.read())
+        
+        self.dbArray[databaseName]["con"].commit()
+    
+    def getSeperateDB(self, app_id):
+        entriesDatabase = self.defaultDB
+        
+        if self.seperateData:
+            entriesDatabase = str(app_id).replace(":","_") + ".db"
+            self.initDatabase(entriesDatabase, True)
+        
+        return entriesDatabase
+            
+        
     
     # Make a url request, and be polite to request limits
-    def urlReq(self, url, params, get = False):
+    def urlReq(self, url, params):
         data = None
         while data == None:
             try:
-                if get != False:
-                    data = requests.get(url)
-                else:
-                    data = requests.post(url, params)
+                data = requests.post(url, params)
 
                 if data.content.decode().strip()[0] != "{":
                     print("Error with response, likely timeout. Retrying")
@@ -40,10 +73,27 @@ class gateway:
         time.sleep(1)
         return data
     
-    def dbReq(self, query):
-        self.cur.execute(query)
-        self.con.commit()
-        return self.cur.fetchall()
+    def urlGet(self, url):
+        data = None
+        while data == None:
+            try:
+                data = requests.get(url)
+                
+            except:
+                print("! connection failed! retrtying")
+                time.sleep(10)
+
+        time.sleep(1)
+        return data
+        
+    
+    def dbReq(self, query, databaseName = "Newgrounds.db"):
+        if databaseName not in self.dbArray:
+            print("- Database not initiated: " + databaseName)
+        
+        self.dbArray[databaseName]["cur"].execute(query)
+        self.dbArray[databaseName]["con"].commit()
+        return self.dbArray[databaseName]["cur"].fetchall()
             
     
     def formatQuery(self, table, item):
@@ -89,7 +139,7 @@ class gateway:
         
         for x in possibleExts:
             guessUrl = f"{medalDir}/{app_id}/" + guessedName + x
-            urlStatus = self.urlReq("https://apifiles.ngfiles.com/medals/" + guessUrl, {}, "get").status_code
+            urlStatus = self.urlGet("https://apifiles.ngfiles.com/medals/" + guessUrl).status_code
             if urlStatus == 200:
                 print("! Found mystery medal: " + guessUrl)
                 return guessUrl
@@ -204,6 +254,8 @@ class gateway:
     def scrapeSaveFiles(self, app_id, group_id, keys, ratings):
         print("Adding saves for group: " + str(group_id))
         
+        entriesDatabase = self.getSeperateDB(app_id)
+        
         page = 1
         moreExist = True
         totalSaves = 0
@@ -240,11 +292,11 @@ class gateway:
             
             for x in saveData['files']:
                 totalSaves += 1
-                saveExists = len(self.dbReq('SELECT save_id FROM archive_saves WHERE save_id="'+str(x['save_id'])+'"')) != 0
+                saveExists = len(self.dbReq('SELECT save_id FROM saves WHERE save_id="'+str(x['save_id'])+'"', entriesDatabase)) != 0
                 if not saveExists:
                     x.pop("file")
                     x['group_id'] = group_id
-                    self.dbReq(self.formatQuery("archive_saves", x))
+                    self.dbReq(self.formatQuery("saves", x), entriesDatabase)
             
             page += 1
             
@@ -342,6 +394,7 @@ class gateway:
         entriesExist = True
         page = 1
         totalScores = 0
+        entriesDatabase = self.getSeperateDB(app_id)
         
         while entriesExist:
             paramObj = {}
@@ -360,7 +413,7 @@ class gateway:
                 entriesExist = len(scoreDat['scores']) > 0
                 totalScores += len(scoreDat['scores'])
                 for x in scoreDat['scores']:
-                    scoreExists = len(self.dbReq('SELECT user_id FROM archive_scores WHERE board_id="'+str(board_id)+'" AND user_id="'+str(x['user_id'])+'"')) != 0
+                    scoreExists = len(self.dbReq('SELECT user_id FROM scores WHERE board_id="'+str(board_id)+'" AND user_id="'+str(x['user_id'])+'"', entriesDatabase)) != 0
                     
                     if not scoreExists:
                         scoreObj = {}
@@ -372,7 +425,7 @@ class gateway:
                         scoreObj['numeric_value'] = x['numeric_value']
                         scoreObj['tag'] = x['tag']
                         
-                        self.dbReq(self.formatQuery("archive_scores", scoreObj))
+                        self.dbReq(self.formatQuery("scores", scoreObj), entriesDatabase)
                 
                 page += 1
             
@@ -381,12 +434,68 @@ class gateway:
                 entriesExist = False
         
         print("! Found " + str(totalScores) + " scores")
+    
+    
+    def exportMovieJson(self, app_id):
+        jsonPath = os.getcwd() + "\\exports\\"
+        jsonFilename = str(app_id).replace(":","_") + ".json"
+        exportObj = {}
+        
+        if not os.path.exists(jsonPath):
+            os.makedirs(jsonPath)
+        
+        # Movie
+        movieDat = self.dbReq('SELECT * FROM movies WHERE app_id="'+str(app_id)+'"')[0]
+        exportObj['movies'] = {"app_id":movieDat[0], "movie_name": movieDat[1], "encryptionKey": movieDat[2]}
+        
+        # Medals
+        medalDat = self.dbReq('SELECT * FROM medals WHERE app_id="'+str(app_id)+'"')
+        exportObj['medals'] = []
+        for x in medalDat:
+            medalObj = {}
+            medalObj['app_id'] = x[0]
+            medalObj['medal_id'] = x[1]
+            medalObj['medal_name'] = x[2]
+            medalObj['medal_description'] = x[3]
+            medalObj['medal_icon'] = x[4]
+            medalObj['medal_difficulty'] = x[5]
+            medalObj['medal_value'] = x[6]
+            medalObj['secret'] = x[7]
+            exportObj['medals'].append(medalObj)
+        
+        # save_groups
+        groupDat = self.dbReq('SELECT * FROM save_groups WHERE app_id="'+str(app_id)+'"')
+        exportObj['save_groups'] = []
+        for x in groupDat:
+            groupObj = {}
+            groupObj['app_id'] = x[0]
+            groupObj['group_id'] = x[1]
+            groupObj['group_name'] = x[2]
+            groupObj['group_type'] = x[3]
+            groupObj['keys'] = x[4]
+            groupObj['ratings'] = x[5]
+            exportObj['save_groups'].append(groupObj)
+        
+        # Scoreboards
+        boardDat = self.dbReq('SELECT * FROM scoreboards WHERE app_id="'+str(app_id)+'"')
+        exportObj['scoreboards'] = []
+        for x in boardDat:
+            boardObj = {}
+            boardObj['app_id'] = x[0]
+            boardObj['board_id'] = x[1]
+            boardObj['board_name'] = x[2]
+            exportObj['scoreboards'].append(boardObj)
+        
+        with open(jsonPath + jsonFilename, "w") as writeFile:
+            writeFile.write(json.dumps(exportObj))
+        
+        print("! Export json for: " + str(app_id))
       
       
     def mainFlow(self):
         if len(sys.argv) < 2:
             fileName = os.path.basename(__file__)
-            print(f"Usage: python {fileName} [app_id] ['scoreboards','savefiles']")
+            print(f"Usage: python {fileName} [app_id] ['scoreboards','savefiles','split']")
             return
         
         # init extra commands
@@ -401,6 +510,14 @@ class gateway:
                     case "savefiles":
                         print("[] Enabled getSaveFiles")
                         self.getSaveFiles = True
+                    
+                    case "seperateData":
+                        print("[] Enabled seperateData")
+                        self.seperateData = True
+                    
+                    case "exportJson":
+                        print("[] Enabled exportJson")
+                        self.exportJson = True
                 
                 i += 1
         
@@ -408,7 +525,13 @@ class gateway:
 
         base.getMedals(app_id)
         
+        if self.exportJson:
+            self.exportMovieJson(app_id)
+    
+    
+        
+        
+
 
 base = gateway()
-
 base.mainFlow()
