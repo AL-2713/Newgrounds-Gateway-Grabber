@@ -15,7 +15,7 @@ savefiles: Scrape save data and user submissions
 
 seperateData: Download scoreboards and save files to a seperate SQL file, if those are enabled
 
-exportJson: Export the game medatada into a json file (exports\[app_id].json)
+exportJson: Export the game medatada into a json file (exports\\[app_id].json)
 
 # Notes
 All the data gets saved to a SQL .db file, which is generated if it doesn't already exist
