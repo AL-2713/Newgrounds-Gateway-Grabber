@@ -417,7 +417,6 @@ class gateway:
                     
                     if not scoreExists:
                         scoreObj = {}
-                        scoreObj['app_id'] = app_id
                         scoreObj['board_id'] = board_id
                         scoreObj['user_id'] = x['user_id']
                         scoreObj['username'] = x['username']
