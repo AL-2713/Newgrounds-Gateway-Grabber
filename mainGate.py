@@ -5,6 +5,7 @@ import time
 import math
 import sys
 import os
+import zlib
 
 class gateway:
 
@@ -18,6 +19,7 @@ class gateway:
         self.getSaveFiles = False # Export user submitted data
         self.seperateData = False # Keeps saves and score entries in a seperate database
         self.exportJson = False
+        self.compressSaveFiles = True
         
         print("Starting Newgrounds Gateway class...")
     
@@ -87,11 +89,15 @@ class gateway:
         return data
         
     
-    def dbReq(self, query, databaseName = "Newgrounds.db"):
+    def dbReq(self, query, databaseName = "Newgrounds.db", params = None):
         if databaseName not in self.dbArray:
             print("- Database not initiated: " + databaseName)
         
-        self.dbArray[databaseName]["cur"].execute(query)
+        if params:
+            self.dbArray[databaseName]["cur"].execute(query, params)
+        else:
+            self.dbArray[databaseName]["cur"].execute(query)
+            
         self.dbArray[databaseName]["con"].commit()
         return self.dbArray[databaseName]["cur"].fetchall()
             
@@ -219,9 +225,6 @@ class gateway:
                             self.dbReq(self.formatQuery("scoreboards", boardObj))
                         else:
                             print("! Board already in database: " + str(y['id']))
-                        
-                        if self.getScores:
-                            self.scrapeScoreboard(y['id'], app_id)
         
         print("! Found " + str(totalBoards) + " scoreboards")
     
@@ -255,6 +258,8 @@ class gateway:
         print("Adding saves for group: " + str(group_id))
         
         entriesDatabase = self.getSeperateDB(app_id)
+        
+        savedFileType = False
         
         page = 1
         moreExist = True
@@ -297,10 +302,28 @@ class gateway:
                     x.pop("file")
                     x['group_id'] = group_id
                     self.dbReq(self.formatQuery("saves", x), entriesDatabase)
+                    self.downloadSaveFile(x['save_id'], entriesDatabase)
+                    
+                    if not savedFileType:
+                        fileExt = self.urlGet("https://www.ngads.com/savefile.php?id=" + str(x['save_id'])).url.split("?")[0].split(".")[-1]
+                        self.dbReq("UPDATE save_groups SET file_type=? WHERE group_id=?", self.defaultDB, [fileExt, group_id])
+                        savedFileType = True
             
             page += 1
             
         print("! Found " + str(totalSaves) + " save files")
+    
+    
+    def downloadSaveFile(self, save_id, database):
+        fileData = self.urlGet("https://www.ngads.com/savefile.php?id=" + str(save_id))
+        fileExt = fileData.url.split("?")[0].split(".")[-1]
+        fileContents = fileData.content
+        
+        if fileExt != "zlib" and self.compressSaveFiles:
+            fileContents = zlib.compress(fileContents, 9)
+        
+        self.dbReq("UPDATE saves SET file_data=? WHERE save_id=?", database, [fileContents,save_id])
+        
         
     
     
@@ -330,8 +353,7 @@ class gateway:
                     
                     self.dbReq(self.formatQuery("save_groups", groupObj))
 
-                if self.getSaveFiles:
-                    self.scrapeSaveFiles(app_id, x['group_id'], x['keys'], x['ratings'])
+                
             
         print("! Found " + str(totalGroups) + " groups")
         
@@ -524,13 +546,19 @@ class gateway:
 
         base.getMedals(app_id)
         
+        if self.getScores:
+            scoreboardsToScrape = self.dbReq("SELECT board_id FROM scoreboards WHERE app_id=?", self.defaultDB, [app_id])
+            for x in scoreboardsToScrape:
+                self.scrapeScoreboard(x[0], app_id)
+        
+        if self.getSaveFiles:
+            saveGroupsToScrape = self.dbReq("SELECT group_id,keys,ratings FROM save_groups WHERE app_id=?", self.defaultDB, [app_id])
+            for x in saveGroupsToScrape:
+                self.scrapeSaveFiles(app_id, x[0], json.loads(x[1]), json.loads(x[2]))
+                
+        
         if self.exportJson:
             self.exportMovieJson(app_id)
-    
-    
-        
-        
-
 
 base = gateway()
 base.mainFlow()
