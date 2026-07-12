@@ -6,12 +6,17 @@ import math
 import sys
 import os
 import zlib
+import shutil
+import warnings
+warnings.filterwarnings("ignore")
 
 class gateway:
 
     def __init__(self):
         self.dbArray = {}
         self.defaultDB = "Newgrounds.db"
+        self.downloadedThumbs = False # Keeps track if thumbnails for save files were downloaded
+        self.hasSecretMedal = False
         
         self.initDatabase(self.defaultDB)
         
@@ -19,14 +24,16 @@ class gateway:
         self.getSaveFiles = False # Export user submitted data
         self.seperateData = False # Keeps saves and score entries in a seperate database
         self.exportJson = False
+        self.downloadThumbs = False # Download save file thumbnails and medals
         self.compressSaveFiles = True
+        
         
         print("Starting Newgrounds Gateway class...")
     
     
     # Handles initiating multible databases
     def initDatabase(self, databaseName, subDB = False):
-        tables = ["movies", "medals", "scoreboards", "save_groups", "scores", "saves"]
+        tables = ["movies", "medals", "scoreboards", "save_groups", "scores", "saves", "custom_links"]
         
         if databaseName in self.dbArray:
             print("- Database already initiated: " + databaseName)
@@ -45,11 +52,16 @@ class gateway:
         
         self.dbArray[databaseName]["con"].commit()
     
-    def getSeperateDB(self, app_id):
+    def getSeperateDB(self):
         entriesDatabase = self.defaultDB
         
         if self.seperateData:
-            entriesDatabase = str(app_id).replace(":","_") + ".db"
+            seperateDirectory = self.downloadDir + "www.ngads.com/"
+            
+            if not os.path.exists(seperateDirectory):
+                os.makedirs(seperateDirectory)
+            
+            entriesDatabase = seperateDirectory + self.app_id.replace(":","_") + ".db"
             self.initDatabase(entriesDatabase, True)
         
         return entriesDatabase
@@ -61,31 +73,31 @@ class gateway:
         data = None
         while data == None:
             try:
-                data = requests.post(url, params)
-
+                data = requests.post(url, params, verify=False)
+                
                 if data.content.decode().strip()[0] != "{":
-                    print("Error with response, likely timeout. Retrying")
+                    print("Error with response, likely timeout. Retrying soon...")
                     data = None
-                    time.sleep(10)
+                    time.sleep(90)
                 
             except:
-                print("! connection failed! retrtying")
-                time.sleep(10)
+                print("! connection failed! retrtying soon...")
+                time.sleep(90)
 
         time.sleep(1)
         return data
     
-    def urlGet(self, url):
+    def urlGet(self, url, waitTime = 1):
         data = None
         while data == None:
             try:
-                data = requests.get(url)
+                data = requests.get(url, verify=False)
                 
             except:
-                print("! connection failed! retrtying")
-                time.sleep(10)
+                print("! connection failed! retrtying soon...")
+                time.sleep(90)
 
-        time.sleep(1)
+        time.sleep(waitTime)
         return data
         
     
@@ -254,10 +266,11 @@ class gateway:
         
         return True
     
+    # Load and save files in a save group
     def scrapeSaveFiles(self, app_id, group_id, keys, ratings):
         print("Adding saves for group: " + str(group_id))
         
-        entriesDatabase = self.getSeperateDB(app_id)
+        entriesDatabase = self.getSeperateDB()
         
         savedFileType = False
         
@@ -295,12 +308,15 @@ class gateway:
             
             moreExist = len(saveData['files']) != 0
             
+            print("! Downloading saveFiles page " + str(page))
+            
             for x in saveData['files']:
                 totalSaves += 1
                 saveExists = len(self.dbReq('SELECT save_id FROM saves WHERE save_id="'+str(x['save_id'])+'"', entriesDatabase)) != 0
                 if not saveExists:
                     x.pop("file")
                     x['group_id'] = group_id
+                    
                     self.dbReq(self.formatQuery("saves", x), entriesDatabase)
                     self.downloadSaveFile(x['save_id'], entriesDatabase)
                     
@@ -308,6 +324,8 @@ class gateway:
                         fileExt = self.urlGet("https://www.ngads.com/savefile.php?id=" + str(x['save_id'])).url.split("?")[0].split(".")[-1]
                         self.dbReq("UPDATE save_groups SET file_type=? WHERE group_id=?", self.defaultDB, [fileExt, group_id])
                         savedFileType = True
+                else:
+                    print("! Save file already exists: " + str(x['save_id']))
             
             page += 1
             
@@ -352,6 +370,8 @@ class gateway:
                     groupObj['ratings'] = x['ratings']
                     
                     self.dbReq(self.formatQuery("save_groups", groupObj))
+                else:
+                    print("! Save group already exists: " + str(x['group_id']))
 
                 
             
@@ -386,11 +406,12 @@ class gateway:
         for x in gatewayJson['medals']:
             totalMedals += 1
             medalExists = len(self.dbReq('SELECT medal_id FROM medals WHERE medal_id="'+str(x['medal_id'])+'"')) != 0
+            medalEntry = x
             
             if not medalExists:
-                medalEntry = x
                 
                 if x['secret']:
+                    self.hasSecretMedal = True
                     medalEntry.pop("medal_icon")
                     guessTry = self.guessMysteryMedal(app_id, x['medal_id'], x['medal_name'])
                     if guessTry != None:
@@ -403,7 +424,7 @@ class gateway:
                 medalEntry.pop("medal_unlocked")
 
                 self.dbReq(self.formatQuery("medals", medalEntry))
-            
+
             else:
                 print("! Medal already in database: " + str(x['medal_id']))
         
@@ -416,7 +437,7 @@ class gateway:
         entriesExist = True
         page = 1
         totalScores = 0
-        entriesDatabase = self.getSeperateDB(app_id)
+        entriesDatabase = self.getSeperateDB()
         
         while entriesExist:
             paramObj = {}
@@ -455,6 +476,77 @@ class gateway:
                 entriesExist = False
         
         print("! Found " + str(totalScores) + " scores")
+    
+    
+    # Download and save thumbnail data
+    def downloadThumbnail(self, thumbnailLocation):
+        if not self.downloadThumbs:
+            return None
+        
+        if thumbnailLocation == None:
+            print("Error downloading: " + thumbnailLocation)
+            return None
+        
+        print("downloading: " + thumbnailLocation)
+        
+        fileLocation = self.downloadDir + "apifiles.ngfiles.com/" + thumbnailLocation
+        fileDir = fileLocation.rsplit("/", 1)[0] + "/"
+        
+        
+        if os.path.isfile(fileLocation): # Skip download if file exists
+            print("! File already downloaded")
+            return None
+        
+        if not os.path.exists(fileDir): # Create dir
+            os.makedirs(fileDir)
+        
+        thumbData = self.urlGet("http://apifiles.ngfiles.com/" + thumbnailLocation, 0)
+        
+        if thumbData.status_code != 200:
+            print("! File error: " + thumbnailLocation)
+            return None
+        
+        with open(fileLocation, 'wb') as imageHandler: # Download and write data
+            imageHandler.write(thumbData.content)
+    
+    
+    # Zip the save_group thumbnails
+    def zipThumbnailArchive(self):
+        if self.downloadedThumbs and self.downloadThumbs:
+            zipLocation = self.downloadDir + "apifiles.ngfiles.com/savedata/"
+            shutil.make_archive(zipLocation + self.app_id_formated, "zip", zipLocation)
+        
+        
+    # Find and download all neessary thumbnail files
+    def downloadImagesWorkflow(self):
+        if not self.downloadThumbs:
+            return None
+        
+        print("! Starting image download")
+        entriesDatabase = self.getSeperateDB()
+        
+        medalImages = self.dbReq('SELECT medal_icon FROM medals WHERE medal_icon IS NOT NULL AND app_id="'+str(self.app_id)+'"')
+        group_ids = self.dbReq('SELECT group_id FROM save_groups WHERE app_id="'+str(self.app_id)+'"')
+        
+        print("! Downloading medal thumbs")
+        for x in medalImages:
+            self.downloadThumbnail("medals/" + x[0])
+        
+        if self.hasSecretMedal:
+            self.downloadThumbnail("icons/medal_secret.png")
+        
+        for x in group_ids:
+            print("! Downloading saveFile thumbs: " + str(x[0]))
+            
+            saveImages = self.dbReq('SELECT thumb FROM saves WHERE group_id="'+str(x[0])+'"', entriesDatabase)
+            for y in saveImages:
+                self.downloadedThumbs = True
+                self.downloadThumbnail("savedata/" + y[0])
+        
+        if self.downloadedThumbs or len(medalImages) > 0:
+            self.downloadThumbnail("crossdomain.xml")
+        
+        
     
     
     def exportMovieJson(self, app_id):
@@ -539,10 +631,21 @@ class gateway:
                     case "exportJson":
                         print("[] Enabled exportJson")
                         self.exportJson = True
+                    
+                    case "downloadThumbs":
+                        print("[] Enabled downloadThumbs")
+                        self.downloadThumbs = True
                 
                 i += 1
         
         app_id = sys.argv[1]
+        self.app_id = app_id
+        self.app_id_formated = app_id
+        
+        if ":" in app_id:
+            self.app_id_formated = self.app_id.split(":")[0]
+        
+        self.downloadDir = "downloads_" + self.app_id_formated + "/"
 
         base.getMedals(app_id)
         
@@ -557,8 +660,14 @@ class gateway:
                 self.scrapeSaveFiles(app_id, x[0], json.loads(x[1]), json.loads(x[2]))
                 
         
+        if self.downloadThumbs:
+            self.downloadImagesWorkflow()
+            self.zipThumbnailArchive()
+                
+        
         if self.exportJson:
             self.exportMovieJson(app_id)
+    
 
 base = gateway()
 base.mainFlow()
