@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS "saves" (
 	"thumb"	TEXT,
 	"description"	TEXT,
 	"file_size"	INTEGER,
-	"locked"	TEXT,
+	"locked"	INTEGER,
 	"keys"	TEXT,
 	"ratings"	TEXT
 )
