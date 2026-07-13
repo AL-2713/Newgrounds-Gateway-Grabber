@@ -316,6 +316,10 @@ class gateway:
                 if not saveExists:
                     x.pop("file")
                     x['group_id'] = group_id
+                    if x['locked'] == True:
+                        x['locked'] = 1
+                    else:
+                        x['locked'] = 0
                     
                     self.dbReq(self.formatQuery("saves", x), entriesDatabase)
                     self.downloadSaveFile(x['save_id'], entriesDatabase)
@@ -326,6 +330,12 @@ class gateway:
                         savedFileType = True
                 else:
                     print("! Save file already exists: " + str(x['save_id']))
+                    
+                    # Doudle check if the file_data was saved
+                    fileDataExists = len(self.dbReq("SELECT file_data FROM saves WHERE save_id=? AND file_data IS NOT NULL", entriesDatabase, [x['save_id']])) != 0
+                    if not fileDataExists:
+                        print("- File data was not downloaded for this entry, doing so now...")
+                        self.downloadSaveFile(x['save_id'], entriesDatabase)
             
             page += 1
             
@@ -384,7 +394,7 @@ class gateway:
         movieStatus = self.addMovie(app_id)
         
         if not movieStatus:
-            print("- Movie does not exist with ID")
+            exit("- Movie does not exist with ID")
             return
         
         self.addScoreboads(app_id)
@@ -490,6 +500,9 @@ class gateway:
         print("downloading: " + thumbnailLocation)
         
         fileLocation = self.downloadDir + "apifiles.ngfiles.com/" + thumbnailLocation
+        
+        fileLocation = fileLocation.replace(".com/savedata/", ".com/savedata_raw/")
+        
         fileDir = fileLocation.rsplit("/", 1)[0] + "/"
         
         
@@ -513,8 +526,13 @@ class gateway:
     # Zip the save_group thumbnails
     def zipThumbnailArchive(self):
         if self.downloadedThumbs and self.downloadThumbs:
-            zipLocation = self.downloadDir + "apifiles.ngfiles.com/savedata/"
-            shutil.make_archive(zipLocation + self.app_id_formated, "zip", zipLocation)
+            zipLocation = self.downloadDir + "apifiles.ngfiles.com/savedata_raw/"
+            finalZipLocation = zipLocation.replace("savedata_raw", "savedata")
+            if not os.path.exists(finalZipLocation): # Create dir
+                os.makedirs(finalZipLocation)
+            
+            
+            shutil.make_archive(finalZipLocation + self.app_id_formated, "zip", zipLocation)
         
         
     # Find and download all neessary thumbnail files
@@ -523,7 +541,7 @@ class gateway:
             return None
         
         print("! Starting image download")
-        entriesDatabase = self.getSeperateDB()
+        entriesDatabase = None
         
         medalImages = self.dbReq('SELECT medal_icon FROM medals WHERE medal_icon IS NOT NULL AND app_id="'+str(self.app_id)+'"')
         group_ids = self.dbReq('SELECT group_id FROM save_groups WHERE app_id="'+str(self.app_id)+'"')
@@ -537,6 +555,9 @@ class gateway:
         
         for x in group_ids:
             print("! Downloading saveFile thumbs: " + str(x[0]))
+            
+            if entriesDatabase == None:
+                entriesDatabase = self.getSeperateDB()
             
             saveImages = self.dbReq('SELECT thumb FROM saves WHERE group_id="'+str(x[0])+'"', entriesDatabase)
             for y in saveImages:
@@ -587,6 +608,7 @@ class gateway:
             groupObj['group_type'] = x[3]
             groupObj['keys'] = x[4]
             groupObj['ratings'] = x[5]
+            groupObj['file_type'] = x[6]
             exportObj['save_groups'].append(groupObj)
         
         # Scoreboards
@@ -597,7 +619,18 @@ class gateway:
             boardObj['app_id'] = x[0]
             boardObj['board_id'] = x[1]
             boardObj['board_name'] = x[2]
+            boardObj['incremental'] = x[3]
             exportObj['scoreboards'].append(boardObj)
+        
+        # Custom links (These are not scraped in the work flow)
+        linkDat = self.dbReq('SELECT * FROM custom_links WHERE app_id="'+str(app_id)+'"')
+        exportObj['custom_links'] = []
+        for x in linkDat:
+            linkObj = {}
+            linkObj['app_id'] = x[0]
+            linkObj['link'] = x[1]
+            linkObj['custom_link'] = x[2]
+            exportObj['custom_links'].append(linkObj)
         
         with open(jsonPath + jsonFilename, "w") as writeFile:
             writeFile.write(json.dumps(exportObj))
