@@ -6,6 +6,7 @@ Data including medals, scoreboards, scoreboard entries, save groups, and save da
 
 # Usage
 python mainGate.py [app_id | SWF url] ['scoreboards','savefiles', 'seperateData', 'exportJson']
+
 If chosen to download with the SWF url, the script will download the url and extract the app_id and encryptionKey from the SWF. This is still in testing, so expect most games to not work with this. Inputing the app_id will still download the gateway data, just not the encryptionKey or SWF file.
 
 You can add these strings onto the command to do more actions:
