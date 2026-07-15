@@ -3,12 +3,15 @@ import json
 import sqlite3
 import time
 import math
+import random
 import sys
 import os
 import zlib
 import shutil
 import warnings
 warnings.filterwarnings("ignore")
+
+from variableExtractor import variableExtractor
 
 class gateway:
 
@@ -256,6 +259,7 @@ class gateway:
             movieObj = {}
             movieObj['app_id'] = app_id
             movieObj['movie_name'] = gameResponse['movie_name']
+            movieObj['encryptionKey'] = self.encryptionKey
             
             self.dbReq(self.formatQuery("movies", movieObj))
 
@@ -488,39 +492,44 @@ class gateway:
         print("! Found " + str(totalScores) + " scores")
     
     
-    # Download and save thumbnail data
-    def downloadThumbnail(self, thumbnailLocation):
-        if not self.downloadThumbs:
+    # General flow for downloading any file
+    def fileDownloader(self, url, waitTimer = 1):
+        
+        if ("://") not in url:
+            print("! Not a valid url")
             return None
         
-        if thumbnailLocation == None:
-            print("Error downloading: " + thumbnailLocation)
-            return None
+        # Format url variables for downloading and writing
+        fileLocation = self.downloadDir + url.split("://")[1]
         
-        print("downloading: " + thumbnailLocation)
-        
-        fileLocation = self.downloadDir + "apifiles.ngfiles.com/" + thumbnailLocation
-        
-        fileLocation = fileLocation.replace(".com/savedata/", ".com/savedata_raw/")
+        if ".com/savedata/" in url:
+            fileLocation = fileLocation.replace(".com/savedata/", ".com/savedata_raw/")
         
         fileDir = fileLocation.rsplit("/", 1)[0] + "/"
         
-        
-        if os.path.isfile(fileLocation): # Skip download if file exists
+        # Disc check
+        if (os.path.isfile(fileLocation)):
             print("! File already downloaded")
             return None
-        
+
         if not os.path.exists(fileDir): # Create dir
             os.makedirs(fileDir)
         
-        thumbData = self.urlGet("http://apifiles.ngfiles.com/" + thumbnailLocation, 0)
-        
-        if thumbData.status_code != 200:
-            print("! File error: " + thumbnailLocation)
+        # Download and write
+        fileData = self.urlGet(url)
+        if (fileData.status_code != 200):
+            print("! File returned an error")
             return None
+
+        with open(fileLocation, "wb") as fileWrite:
+            fileWrite.write(fileData.content)
+            print("! Downloaded: " + url)
         
-        with open(fileLocation, 'wb') as imageHandler: # Download and write data
-            imageHandler.write(thumbData.content)
+    
+    
+    # Download and save thumbnail data
+    def downloadThumbnail(self, thumbnailLocation):
+        self.fileDownloader("http://apifiles.ngfiles.com/" + thumbnailLocation, 0)
     
     
     # Zip the save_group thumbnails
@@ -641,7 +650,7 @@ class gateway:
     def mainFlow(self):
         if len(sys.argv) < 2:
             fileName = os.path.basename(__file__)
-            print(f"Usage: python {fileName} [app_id] ['scoreboards','savefiles','split']")
+            print(f"Usage: python {fileName} [app_id or URL] ['scoreboards','savefiles','split']")
             return
         
         # init extra commands
@@ -671,15 +680,46 @@ class gateway:
                 
                 i += 1
         
-        app_id = sys.argv[1]
-        self.app_id = app_id
-        self.app_id_formated = app_id
         
+        input = sys.argv[1]
+        
+        
+        # input was a url
+        # Download the swf and extract the app_id and encryption key
+        if input[:4] == "http":
+            if input[-3:] != "swf":
+                exit("! Not a valid swf url")
+            
+            self.downloadDir = "downloads/" + input.rsplit("/", 1)[1].replace(".swf", "")[:15] + "/"
+            self.fileDownloader(input)
+            
+            extractor = variableExtractor()
+            variables = extractor.getVars(self.downloadDir + input.split("://")[1])
+            print(variables)
+            
+            if len(variables) == 0 or type(variables[1]) is not str:
+                exit("! The app_id could not be extracted from this swf")
+            
+            self.encryptionKey = variables[0] or ""
+            app_id = variables[1]
+            
+            print("Got the app_id: " + app_id)
+            print("Got the encryptionKey: " + str(self.encryptionKey))
+            
+        
+        # Assume input was the app_id
+        else:
+            app_id = sys.argv[1]
+            self.encryptionKey = ""
+            self.downloadDir = "downloads/" + app_id + "/"
+        
+        self.app_id = app_id
+        
+        self.app_id_formated = app_id
         if ":" in app_id:
             self.app_id_formated = self.app_id.split(":")[0]
         
-        self.downloadDir = "downloads_" + self.app_id_formated + "/"
-
+        
         base.getMedals(app_id)
         
         if self.getScores:
